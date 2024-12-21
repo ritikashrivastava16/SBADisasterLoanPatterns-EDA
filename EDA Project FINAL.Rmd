@@ -1,0 +1,773 @@
+---
+title: "Analysis v2"
+output: html_document
+date: "2024-11-17"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readxl)
+library(dplyr) 
+library(tidyverse)
+library(scales)
+library(viridis)
+library(maps)
+library(sf)
+library(ggplot2)
+library(mgcv)    # For GAM
+library(lme4) 
+library(Matrix) # For mixed models
+
+```
+Cleaning the data
+
+```{r}
+folder_path <- "~/Library/CloudStorage/OneDrive-SharedLibraries-IndianaUniversity/Shrivastava, Ritika - EDA_Final_Project/Data Cleaned"
+#folder_path <- "/Users/ritikashrivastava/Library/CloudStorage/OneDrive-IndianaUniversity(2)/EDA_Final_Project/Data Cleaned"
+excel_files <- list.files(path = folder_path, pattern = "\\.xlsx$", full.names = TRUE)
+```
+
+```{r}
+combined_data <- excel_files %>%
+  lapply(function(file) {
+    df <- read_excel(file)
+    df <- df %>% mutate(across(everything(), as.character))
+    return(df)
+  }) %>%
+  bind_rows()
+
+print(combined_data)
+```
+
+```{r}
+combined_data <- combined_data %>% select(-approved_amount_eidl)
+data <- na.omit(combined_data)
+nrow(data)
+```
+
+Made some transformations in excel and loaded that
+
+```{r}
+
+# Read the CSV file using readr
+fema_data <- read.csv("~/Library/CloudStorage/OneDrive-SharedLibraries-IndianaUniversity/Shrivastava, Ritika - EDA_Final_Project/cleaned_eda_data.csv")
+
+```
+
+
+```{r}
+data <- fema_data %>%
+  mutate(across(c(total_verified_loss, verified_loss_real_estate, 
+                  verified_loss_content, total_approved_loan_amount,
+                  approved_amount_real_estate, approved_amount_content,
+                  year), as.numeric)) %>%
+  mutate(recovery_ratio = total_approved_loan_amount / total_verified_loss)
+```
+
+Initial data exploratory analysis
+
+```{r}
+yearly_trend <- data %>%
+  group_by(year) %>%
+  summarise(
+    mean_ratio = mean(recovery_ratio, na.rm = TRUE),
+    sd_ratio = sd(recovery_ratio, na.rm = TRUE),
+    n = n(),
+    se_ratio = sd_ratio / sqrt(n),
+    ci_lower = mean_ratio - 1.96 * se_ratio,
+    ci_upper = mean_ratio + 1.96 * se_ratio
+  )
+
+ggplot(yearly_trend, aes(x = year, y = mean_ratio)) +
+  geom_line(color = "#2E86C1", size = 1) +
+  geom_point(color = "#2E86C1", size = 3) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2) +
+  theme_minimal() +
+  labs(
+    title = "Trend in SBA Loan Recovery Ratios (2007-2022)",
+    subtitle = "Annual average ratio of approved amount to verified loss",
+    x = "Year",
+    y = "Recovery Ratio",
+    caption = "Shaded area represents 95% confidence interval"
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.title = element_text(face = "bold")
+  )
+```
+```{r}
+data <- data %>%
+  mutate(
+    recovery_ratio_real_estate = as.numeric(approved_amount_real_estate) / as.numeric(verified_loss_real_estate),
+    recovery_ratio_content = as.numeric(approved_amount_content) / as.numeric(verified_loss_content)
+  )
+
+# Calculate averages by loan type
+loan_type_summary <- data %>%
+  summarize(
+    avg_recovery_real_estate = mean(recovery_ratio_real_estate, na.rm = TRUE),
+    avg_recovery_content = mean(recovery_ratio_content, na.rm = TRUE)
+  )
+```
+
+```{r}
+# Aggregate data for yearly trends with confidence intervals
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+yearly_trends <- data %>%
+  group_by(year) %>%
+  summarize(
+    mean_real_estate = mean(recovery_ratio_real_estate, na.rm = TRUE),
+    sd_real_estate = sd(recovery_ratio_real_estate, na.rm = TRUE),
+    mean_content = mean(recovery_ratio_content, na.rm = TRUE),
+    sd_content = sd(recovery_ratio_content, na.rm = TRUE),
+    n_real_estate = sum(!is.na(recovery_ratio_real_estate)),
+    n_content = sum(!is.na(recovery_ratio_content))
+  ) %>%
+  mutate(
+    ci_real_estate_lower = mean_real_estate - 1.96 * (sd_real_estate / sqrt(n_real_estate)),
+    ci_real_estate_upper = mean_real_estate + 1.96 * (sd_real_estate / sqrt(n_real_estate)),
+    ci_content_lower = mean_content - 1.96 * (sd_content / sqrt(n_content)),
+    ci_content_upper = mean_content + 1.96 * (sd_content / sqrt(n_content))
+  ) %>%
+  pivot_longer(
+    cols = starts_with("mean_"),
+    names_to = "loan_type",
+    values_to = "mean_ratio"
+  ) %>%
+  mutate(
+    ci_lower = ifelse(loan_type == "mean_real_estate", ci_real_estate_lower, ci_content_lower),
+    ci_upper = ifelse(loan_type == "mean_real_estate", ci_real_estate_upper, ci_content_upper),
+    loan_type = recode(loan_type, "mean_real_estate" = "Real Estate", "mean_content" = "Content")
+  )
+
+# Plot the trends
+ggplot(yearly_trends, aes(x = year, y = mean_ratio, color = loan_type, fill = loan_type)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, color = NA) +
+  theme_minimal() +
+  labs(
+    title = "Trends in SBA Loan Recovery Ratios (2007-2022)",
+    subtitle = "Annual average ratios of approved amounts to verified losses for loan types",
+    x = "Year",
+    y = "Recovery Ratio",
+    caption = "Shaded area represents 95% confidence interval",
+    color = "Loan Type",
+    fill = "Loan Type"
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.title = element_text(face = "bold")
+  ) +
+  scale_color_manual(values = c("Real Estate" = "#2E86C1", "Content" = "#E74C3C")) +
+  scale_fill_manual(values = c("Real Estate" = "#2E86C1", "Content" = "#E74C3C"))
+
+```
+
+```{r}
+state_summary <- data %>%
+  group_by(damaged_property_state_code) %>%
+  summarize(
+    total_verified_loss = sum(total_verified_loss, na.rm = TRUE),
+    total_approved_loan = sum(total_approved_loan_amount, na.rm = TRUE),
+    avg_recovery_ratio = mean(total_approved_loan / total_verified_loss, na.rm = TRUE)
+  )
+
+# Sort by recovery ratio
+state_summary <- state_summary %>%
+  arrange(avg_recovery_ratio)
+
+print(state_summary)
+```
+
+
+
+```{r}
+overall_summary <- data %>%
+  summarize(
+    total_verified_loss = sum(total_verified_loss, na.rm = TRUE),
+    total_approved_loan = sum(total_approved_loan_amount, na.rm = TRUE),
+    overall_recovery_ratio = total_approved_loan / total_verified_loss
+  )
+
+print(overall_summary)
+```
+
+```{r}
+data %>%
+  group_by(damaged_property_state_code, year) %>%
+  summarize(
+    total_verified_loss__amount = sum(as.numeric(total_verified_loss), na.rm = TRUE),
+    total_approved_loan__amount = sum(as.numeric(total_approved_loan_amount), na.rm = TRUE),
+    avg_recovery_ratio = total_approved_loan__amount/total_verified_loss__amount,
+    .groups = "drop"
+  )
+```
+
+
+
+
+```{r}
+# Explicit mapping of the 51 states to regions and divisions
+state_region_division <- data.frame(
+  state = c("CT", "ME", "MA", "NH", "RI", "VT", "NJ", "NY", "PA", "MD", 
+            "IL", "IN", "MI", "OH", "WI", "IA", "KS", "MN", "MO", "NE", 
+            "ND", "SD", "DE", "FL", "GA", "NC", "SC", "VA", "DC", "WV", 
+            "AL", "KY", "MS", "TN", "LA", "AR", "OK", "TX", "AZ", "CO", 
+            "ID", "MT", "NV", "NM", "UT", "WY", "AK", "CA", "HI", "OR", 
+            "WA"),
+  geographical_division = c("New England", "New England", "New England", "New England", 
+               "New England", "New England", "Middle Atlantic", "Middle Atlantic", 
+               "Middle Atlantic", "Middle Atlantic", "East North Central", 
+               "East North Central", "East North Central", "East North Central", 
+               "East North Central", "West North Central", "West North Central", 
+               "West North Central", "West North Central", "West North Central", 
+               "West North Central", "West North Central",  
+               "South Atlantic", "South Atlantic", "South Atlantic", 
+               "South Atlantic", "South Atlantic", "South Atlantic", 
+               "South Atlantic", "South Atlantic", "East South Central", 
+               "East South Central", "East South Central", "East South Central", 
+               "West South Central", "West South Central", "West South Central", 
+               "West South Central", "Mountain", "Mountain", "Mountain", "Mountain", 
+               "Mountain", "Mountain", "Mountain", "Mountain", "Pacific", "Pacific", 
+               "Pacific", "Pacific", "Pacific"),
+  region = c("Northeast", "Northeast", "Northeast", "Northeast", "Northeast", 
+             "Northeast", "Northeast", "Northeast", "Northeast", "Northeast", 
+             "Midwest", "Midwest", "Midwest", "Midwest", "Midwest",
+             "Midwest", "Midwest", "Midwest", "Midwest", "Midwest",
+             "Midwest", "Midwest", "South", "South", "South", "South", 
+             "South", "South", "South", "South", 
+             "South", "South", "South", "South", 
+             "South", "South", "South", "South", 
+             "West", "West", "West", "West",
+             "West", "West", "West", "West",
+             "West", "West", "West", "West", "West")
+)
+
+# Now, use this to merge with your main dataset
+data <- data %>%
+  left_join(state_region_division, by = c("damaged_property_state_code" = "state"))
+
+# View the first few rows of the merged data
+head(data)
+
+
+```
+Filtering the data
+```{r}
+data <- data %>% filter(!is.na(geographical_division)) %>%
+   filter(!is.na(region)) %>%
+  filter(!is.infinite(recovery_ratio)) %>%
+  filter(recovery_ratio < 1)
+nrow(data)
+```
+
+```{r}
+summary(data$recovery_ratio)
+```
+
+Cleaned the data set loaded it to a csv and re-read from that
+
+```{r}
+data <- read.csv("new_data.csv")
+
+# Handle missing data
+data <- na.omit(data)
+
+# Ensure categorical variables are properly encoded
+data$geographical_division <- as.factor(data$geographical_division)
+data$incident_type <- as.factor(data$incident_type)
+
+data <- data %>% filter(total_approved_loan_amount != 0 & total_verified_loss != 0)
+```
+
+```{r}
+
+ggplot(data, aes(x = log(total_verified_loss), y = log(total_approved_loan_amount))) +
+  geom_point(color = "blue") +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(x = "Log Total Verified Loss", 
+       y = "Log Total Approved Loan Amount",
+       title = "Log Total Approved Loan Amount vs Log Total Verified Loss")
+```
+
+
+
+```{r}
+# Plot recovery ratio distribution with density plot and facets by geographical_division
+ggplot(data, aes(x = log(total_approved_loan_amount))) + 
+  geom_histogram(binwidth = 0.5, fill = "#2E86C1", color = "black") +  # Adjust binwidth and use log-transformed values
+  facet_wrap(~ geographical_division, scales = "free_y") +  # Facet by incident type
+  labs(
+    title = "Approved Loan Amount Distribution by Geopgraphical Division",
+    x = "Log Total Approved Loan Amount", 
+    y = "Density",
+    caption = "Data Source: SBA Disaster Loan Program"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),  # Title formatting
+    axis.title.x = element_text(face = "bold"),  # Bold x-axis title
+    axis.title.y = element_text(face = "bold"),  # Bold y-axis title
+    axis.text.x = element_text(size = 8),  # Adjust x-axis text size
+    axis.text.y = element_text(size = 8),  # Adjust y-axis text size
+    strip.text = element_text(size = 8),  # Facet label size
+    panel.grid.major = element_line(color = "gray", size = 0.2),  # Gray major gridlines
+    panel.grid.minor = element_line(color = "gray", size = 0.1),  # Minor gridlines
+    axis.text = element_text(color = "black"),  # Axis text color
+    axis.title = element_text(size = 10, color = "black"),  # Axis title size and color
+    panel.grid.major.y = element_blank()  # Remove major gridlines for y-axis
+  )
+```
+
+
+
+
+
+```{r}
+data_cleaned <- data %>%
+  filter(!incident_type %in% c("Other", "Mud/Landslide", "Typhoon", "Volcanic Eruption", "Dam/Levee Break")) %>%
+  filter(geographical_division %in% c(
+    "East North Central", "Pacific", "Middle Atlantic", 
+    "West South Central", "South Atlantic", "East South Central", 
+    "Mountain", "New England", "West North Central"))
+```
+
+
+```{r}
+ggplot(data_cleaned, aes(x = log(total_verified_loss), y = log(total_approved_loan_amount))) +
+  geom_point(size = 0.5, color = "#2E86C1") + 
+  geom_smooth(method = "lm", se = FALSE, color = "black", size = 0.5) + 
+  facet_wrap(~ incident_type) +  # Facet by incident_type
+  labs(title = "Relationship between Verified Loss and Approved Loan Amount",
+       x = "Total Verified Loss",
+       y = "Total Approved Loan Amount",
+       color = "Incident Type") +
+  theme_minimal()  # Clean theme
+
+```
+```{r}
+ggplot(data_cleaned, aes(x = log(total_verified_loss), y = log(total_approved_loan_amount))) +
+  geom_point(size = 0.5, color = "#2E86C1") + 
+  geom_smooth(method = "lm", se = FALSE, color = "black", size = 0.5) + 
+  facet_wrap(~ geographical_division) +  # Facet by incident_type
+  labs(title = "Relationship between Verified Loss and Approved Loan Amount",
+       x = "Total Verified Loss",
+       y = "Total Approved Loan Amount",
+       color = "Incident Type") +
+  theme_minimal()  # Clean theme
+
+```
+
+```{r}
+cbbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#999999")
+ggplot(data_cleaned, aes(x = year, y = incident_type, fill = log(total_approved_loan_amount))) + 
+  geom_tile() +
+  facet_wrap(~ geographical_division) +
+  scale_fill_viridis(option = "B") + 
+  #scale_color_manual(values = cbbPalette) +
+  labs(title = "Log Approved Loan Amount by Geographical Division, Incident Type, Year",
+       x = "Year",
+       y = "Geographical Division",
+       fill = "Log of Approved Loan Amounts") +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom", # Move the legend to the bottom
+    legend.title = element_text(size = 10), # Optional: Adjust legend title size
+    legend.text = element_text(size = 8)    # Optional: Adjust legend text size
+  )
+```
+
+Model Fitting and Summary
+
+```{r}
+# Add log-transformed variables to the dataset
+data_cleaned$log_total_approved_loan_amount <- log(data_cleaned$total_approved_loan_amount)
+data_cleaned$log_total_verified_loss <- log(data_cleaned$total_verified_loss)
+
+# Refit the model using the transformed variables
+gam_model <- gam(
+  log_total_approved_loan_amount ~ 
+    as.factor(year) + 
+    s(log_total_verified_loss, bs = "cs") + 
+    geographical_division + 
+    incident_type, 
+  data = data_cleaned
+)
+
+# Print summary of the model
+print("Summary of GAM Model:")
+summary(gam_model)
+
+
+# Generate a grid for prediction
+grid <- expand.grid(
+  year = unique(data_cleaned$year),
+  log_total_verified_loss = seq(
+    min(data_cleaned$log_total_verified_loss), 
+    max(data_cleaned$log_total_verified_loss), 
+    length.out = 100
+  ),
+  geographical_division = unique(data$geographical_division)[1], # Choose one level
+  incident_type = unique(data$incident_type)[1]                  # Choose one level
+)
+
+# Add predictions to the grid
+grid$predicted <- predict(gam_model, newdata = grid)
+
+# Visualization: GAM Model Predictions
+ggplot(grid, aes(x = log_total_verified_loss, y = predicted, color = as.factor(year))) +
+  geom_line() +
+  labs(
+    x = "Log of Total Verified Loss",
+    y = "Log of Predicted Loan Amount",
+    color = "Year",
+    title = "GAM Model Predictions Across Years",
+    subtitle = "Log(Predicted Loan Amount) vs. Log(Total Verified Loss)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10)
+  )
+
+# Extract fitted values and residuals
+fitted_values <- fitted(gam_model)
+residuals <- residuals(gam_model)
+
+# Visualization: Residuals vs. Fitted Values
+plot(
+  fitted_values, residuals,
+  xlab = "Fitted Values (Log of Predicted Loan Amount)",
+  ylab = "Residuals",
+  main = "Residuals vs. Fitted Values for GAM Model"
+)
+abline(h = 0, col = "red", lwd = 2)
+
+
+# Generate a grid for prediction for a single year
+grid <- expand.grid(
+  year = unique(data_cleaned$year)[1],  # Fix year to one level
+  log_total_verified_loss = seq(min(data_cleaned$log_total_verified_loss), 
+                                max(data_cleaned$log_total_verified_loss), 
+                                length.out = 500),
+  geographical_division = unique(data$geographical_division)[1], # Fix one level
+  incident_type = unique(data_cleaned$incident_type)[1]                  # Fix one level
+)
+
+# Add predictions to the grid
+grid$predicted <- predict(gam_model, newdata = grid)
+
+# Visualize predictions and data
+ggplot() +
+  # Add original data as scatter points
+  geom_point(data = data_cleaned, aes(x = log_total_verified_loss, y = log_total_approved_loan_amount), alpha = 0.6) +
+  # Add single smooth prediction line
+  geom_line(data = grid, aes(x = log_total_verified_loss, y = predicted), color = "blue", size = 1) +
+  labs(
+    x = "Log(Total Verified Loss)", 
+    y = "Log(Predicted Loan Amount)",
+    title = "GAM Predictions and Actual Data"
+  ) +
+  theme_minimal() + theme(plot.title = element_text(hjust = 0.5)) +
+    theme(
+    text = element_text(size = 14),  # Increase text size
+    panel.grid = element_line(color = "gray", linetype = "dotted")  # Subtle grid lines
+  ) 
+
+```
+
+
+
+
+
+
+```{r}
+mixed_model <- lmer(log(total_approved_loan_amount) ~ log(total_verified_loss) + geographical_division + incident_type + (1 | year) + (1 | geographical_division), data = data_cleaned)
+
+#print("Summary of GAM Model:")
+summary(mixed_model)
+print(summary(gam_model), correlation = TRUE)
+
+# Add log-transformed variables to the dataset
+data_cleaned$log_total_approved_loan_amount <- log(data_cleaned$total_approved_loan_amount)
+data_cleaned$log_total_verified_loss <- log(data_cleaned$total_verified_loss)
+
+# Refit the model using the transformed variables
+mixed_model <- gam(
+  log_total_approved_loan_amount ~ 
+    as.factor(year) + 
+    s(log_total_verified_loss, bs = "cs") + 
+    geographical_division + 
+    incident_type, 
+  data = data_cleaned
+)
+
+# Generate a grid for prediction
+grid <- expand.grid(
+  year = unique(data$year),
+  log_total_verified_loss = seq(
+    min(data_cleaned$log_total_verified_loss), 
+    max(data_cleaned$log_total_verified_loss), 
+    length.out = 100
+  ),
+  geographical_division = unique(data_cleaned$geographical_division)[1], # Choose one level
+  incident_type = unique(data_cleaned$incident_type)[1]                  # Choose one level
+)
+
+# Add predictions to the grid
+grid$predicted <- predict(mixed_model, newdata = grid)
+
+# Visualization: GAM Model Predictions
+ggplot(grid, aes(x = log_total_verified_loss, y = predicted, color = as.factor(year))) +
+  geom_line() +
+  labs(
+    x = "Log of Total Verified Loss",
+    y = "Log of Predicted Loan Amount",
+    color = "Year",
+    title = "GAM Model Predictions Across Years",
+    subtitle = "Log(Predicted Loan Amount) vs. Log(Total Verified Loss)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10)
+  )
+
+# Extract fitted values and residuals
+fitted_values <- fitted(mixed_model)
+residuals <- residuals(mixed_model)
+
+# Visualization: Residuals vs. Fitted Values
+plot(
+  fitted_values, residuals,
+  xlab = "Fitted Values (Log of Predicted Loan Amount)",
+  ylab = "Residuals",
+  main = "Residuals vs. Fitted Values for GAM Model"
+)
+abline(h = 0, col = "red", lwd = 2)
+
+```
+
+
+```{r}
+# Compare the two models using ANOVA with Chi-Square test
+anova_result <- anova(lm_model, gam_model, test = "Chisq")
+
+# Print the results of the ANOVA comparison
+print("ANOVA Model Comparison: Linear Model vs GAM Model")
+print(anova_result)
+```
+
+
+
+```{r}
+# Calculate AIC and BIC for all models
+model_comparison <- data.frame(
+  Model = c("GAM", "Linear", "Mixed Effects"),
+  AIC = c(AIC(gam_model), 
+          AIC(lm_model), 
+          AIC(mixed_model)),
+  BIC = c(BIC(gam_model), 
+          BIC(lm_model), 
+          BIC(mixed_model))
+)
+```
+
+
+```{r}
+lm_model <- lm(log(total_approved_loan_amount) ~ log(total_verified_loss) + incident_type + geographical_division + as.factor(year), 
+               data = data_cleaned)
+# Extracting coefficients from the model
+coefficients_summary <- summary(lm_model)$coefficients
+
+# Extracting confidence intervals for coefficients
+confint_summary <- confint(lm_model)
+
+# Create a dataframe for the coefficients and confidence intervals
+coefficients_df <- data.frame(
+  Variable = rownames(coefficients_summary),
+  Coefficient = coefficients_summary[, 1],
+  CI_Lower = confint_summary[, 1],
+  CI_Upper = confint_summary[, 2]
+)
+
+# Preview the coefficients data
+head(coefficients_df)
+
+# Example for incident_type
+incident_type_coefficients <- coefficients_df[grep("incident_type", coefficients_df$Variable), ]
+
+ggplot(incident_type_coefficients, aes(x = Coefficient, y = Variable)) +
+  geom_point(size = 3) +  # Plot the coefficient points
+  geom_errorbarh(aes(xmin = CI_Lower, xmax = CI_Upper), height = 0.2) +  # Add error bars
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +  # Add a vertical reference line at 0
+  labs(
+    title = "Coefficients for Each Incident Type",
+    x = "Coefficient Value",
+    y = "Incident Type"
+  ) +
+  theme_minimal()
+
+geographical_division_coefficients <- coefficients_df[grep("geographical_division", coefficients_df$Variable), ]
+
+ggplot(geographical_division_coefficients, aes(x = Coefficient, y = Variable)) +
+  geom_point(size = 3) +  # Plot the coefficient points
+  geom_errorbarh(aes(xmin = CI_Lower, xmax = CI_Upper), height = 0.2) +  # Add error bars
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +  # Add a vertical reference line at 0
+  labs(
+    title = "Coefficients for Each Geographical Division",
+    x = "Coefficient Value",
+    y = "Geographical Division"
+  ) +
+  theme_minimal()
+
+year_coefficients <- coefficients_df[grep("year", coefficients_df$Variable), ]
+
+ggplot(year_coefficients, aes(x = Coefficient, y = Variable)) +
+  geom_point(size = 3) +  # Plot the coefficient points
+  geom_errorbarh(aes(xmin = CI_Lower, xmax = CI_Upper), height = 0.2) +  # Add error bars
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +  # Add a vertical reference line at 0
+  labs(
+    title = "Coefficients for Each Year",
+    x = "Coefficient Value",
+    y = "Year"
+  ) +
+  theme_minimal()
+```
+
+Exponential co-efficients
+
+```{r}
+incident_type_coefficients$Exponentiated_Coefficient <- exp(incident_type_coefficients$Coefficient)
+incident_type_coefficients$CI_Lower_Exp <- exp(incident_type_coefficients$CI_Lower)
+incident_type_coefficients$CI_Upper_Exp <- exp(incident_type_coefficients$CI_Upper)
+
+# Plot the exponentiated coefficients
+ggplot(incident_type_coefficients, aes(x = Exponentiated_Coefficient, y = Variable)) + 
+  geom_point(size = 3) +  # Plot the exponentiated coefficient points
+  geom_errorbarh(aes(xmin = CI_Lower_Exp, xmax = CI_Upper_Exp), height = 0.2) +  # Add error bars for exponentiated coefficients
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +  # Add a vertical reference line at 1
+  labs(
+    title = "Coefficients for Each Incident Type",
+    x = "Coefficient Value",
+    y = "Incident Type"
+  ) + 
+  theme_minimal()
+
+# Exponentiate the coefficients for geographical_division
+geographical_division_coefficients$Exponentiated_Coefficient <- exp(geographical_division_coefficients$Coefficient)
+geographical_division_coefficients$CI_Lower_Exp <- exp(geographical_division_coefficients$CI_Lower)
+geographical_division_coefficients$CI_Upper_Exp <- exp(geographical_division_coefficients$CI_Upper)
+
+# Plot the exponentiated coefficients
+ggplot(geographical_division_coefficients, aes(x = Exponentiated_Coefficient, y = Variable)) +
+  geom_point(size = 3) +  # Plot the exponentiated coefficient points
+  geom_errorbarh(aes(xmin = CI_Lower_Exp, xmax = CI_Upper_Exp), height = 0.2) +  # Add error bars for exponentiated coefficients
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +  # Reference line at 1 for exponential scale
+  labs(
+    title = "Coefficients for Each Geographical Division",
+    x = "Coefficient Value",
+    y = "Geographical Division"
+  ) +
+  theme_minimal()
+
+# Subset the year coefficients
+year_coefficients <- coefficients_df[grep("year", coefficients_df$Variable), ]
+
+# Exponentiate the coefficients and confidence intervals
+year_coefficients$Exponentiated_Coefficient <- exp(year_coefficients$Coefficient)
+year_coefficients$CI_Lower_Exp <- exp(year_coefficients$CI_Lower)
+year_coefficients$CI_Upper_Exp <- exp(year_coefficients$CI_Upper)
+
+# Clean up the y-axis labels (remove "as.factor(year)" prefix)
+year_coefficients$Year <- gsub("as.factor\\(year\\)", "", year_coefficients$Variable)
+
+# Plot the exponentiated coefficients
+ggplot(year_coefficients, aes(x = Exponentiated_Coefficient, y = Year)) +
+  geom_point(size = 3) +  # Plot the exponentiated coefficient points
+  geom_errorbarh(aes(xmin = CI_Lower_Exp, xmax = CI_Upper_Exp), height = 0.2) +  # Add error bars
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +  # Reference line at 1 for exponentiated coefficients
+  labs(
+    title = "Coefficients for Each Year",
+    x = "Coefficient Value",
+    y = "Year"
+  ) +
+  theme_minimal()
+```
+```{r}
+data_cleaned$log.total_verified_loss <- log(data_cleaned$total_verified_loss)
+data_cleaned$log.total_approved_loan_amount <- log(data_cleaned$total_approved_loan_amount)
+```
+
+
+```{r}
+lm_model_incident_type <- lm(log.total_approved_loan_amount ~ log.total_verified_loss + incident_type, 
+               data = data_cleaned)
+
+cbbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#CC79A7")
+wells.grid <- expand.grid(incident_type = c("Earthquake", "Fire", "Flood", "Hurricane", "Severe Ice Storm", "Severe Storm", "Tornado"), 
+                          log.total_verified_loss = data_cleaned$log.total_verified_loss)
+wells.grid$log.total_verified_loss <- as.numeric(as.character(wells.grid$log.total_verified_loss))
+wells.pred <- predict(lm_model_incident_type, newdata = wells.grid, type = "response")
+wells.grid$log.predicted_loan_amount <- as.vector(wells.pred)
+ggplot(wells.grid, aes(x = log.total_verified_loss, y = log.predicted_loan_amount, group = incident_type, color = incident_type)) +
+  geom_line() +
+  scale_color_manual(values = cbbPalette) +
+labs(title = "Verified Total Losses vs Predicted Approved Loan by Incident Type",
+       x = "Log Verified Total Losses",
+       y = "Predicted Log Approved Loan Amount",
+      fill="Incident Type")
+
+okabe_ito_colors <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", 
+                      "#0072B2", "#D55E00", "#CC79A7", "#999999", "#000000")
+
+cbbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#999999")
+
+lm_model_gd <- lm(log.total_approved_loan_amount ~ log.total_verified_loss + geographical_division, 
+               data = data_cleaned)
+
+wells.grid <- expand.grid(geographical_division = c("East North Central", "East South Central", "Middle Atlantic", "Mountain", "New England", "Pacific", "South Atlantic", "West North Central", "West South Central"),log.total_verified_loss = data_cleaned$log.total_verified_loss)
+wells.grid$log.total_verified_loss <- as.numeric(as.character(wells.grid$log.total_verified_loss))
+wells.pred <- predict(lm_model_gd, newdata = wells.grid, type = "response")
+wells.grid$prob <- as.vector(wells.pred)
+ggplot(wells.grid, aes(x = log.total_verified_loss, y = prob, group = geographical_division, color = geographical_division)) +
+  geom_line() +
+  scale_color_manual(values = cbbPalette) +
+  labs(title = "Verified Total Losses vs Predicted Approved Loan by Geographical Division",
+         x = "Log Verified Total Losses",
+         y = "Predicted Log Approved Loan Amount",
+        fill="Geographical Division")
+
+lm_model_year <- lm(log.total_approved_loan_amount ~ log.total_verified_loss + year, 
+               data = data_cleaned)
+
+wells.grid <- expand.grid(year = c(2007:2022),
+                          log.total_verified_loss = data_cleaned$log.total_verified_loss)
+wells.grid$log.total_verified_loss <- as.numeric(as.character(wells.grid$log.total_verified_loss))
+wells.pred <- predict(lm_model_year, newdata = wells.grid, type = "response")
+wells.grid$prob <- as.vector(wells.pred)
+ggplot(wells.grid, aes(x = log.total_verified_loss, y = prob, group = year, color = year)) +
+  geom_line() +
+  #scale_fill_gradient() + 
+  #scale_fill_viridis(option = "B") + 
+  labs(title = "Verified Total Losses vs Predicted Approved Loan by Year",
+         x = "Log Verified Total Losses",
+         y = "Predicted Log Approved Loan Amount",
+        fill="Year")
+```
+
