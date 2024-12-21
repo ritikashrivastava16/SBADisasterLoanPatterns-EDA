@@ -1,5 +1,7 @@
 # SBADisasterLoanPatterns-EDA
 
+Team: Ritika Shrivastava, Yukta Muthreja, Abhirav Dhiraj Lande, Shikha Punjabi
+
 The Small Business Administration (SBA) Disaster Loan Program is a federal initiative designed to provide financial assistance to individuals and businesses affected by declared disasters. These low-interest loans help cover uninsured losses and facilitate recovery efforts.
 
 Who Can Get an SBA Disaster Loan?
